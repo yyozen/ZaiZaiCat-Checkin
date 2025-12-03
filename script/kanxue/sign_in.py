@@ -50,6 +50,7 @@ class KanxueSignInManager:
             config_path = Path(config_path)
 
         self.config_path = config_path
+        self.site_name = "看雪论坛"
         self.accounts = []
         self.load_config()
 
@@ -331,4 +332,3 @@ def main():
 if __name__ == '__main__':
     exit_code = main()
     sys.exit(exit_code)
-
