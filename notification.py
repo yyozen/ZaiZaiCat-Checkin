@@ -38,6 +38,7 @@
 
 Author: Assistant
 Date: 2025-12-08
+参考项目:https://github.com/Sitoi/dailycheckin 的推送相关内容
 """
 
 import os

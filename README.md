@@ -24,7 +24,7 @@
 
 - 🚀 **多平台支持** - 集成多个平台的自动签到和任务执行功能
 - 👥 **多账号管理** - 每个平台支持配置多个账号，自动循环执行
-- 📱 **通知推送** - 集成 Bark 推送，实时获取执行结果
+- 📱 **通知推送** - 集成 多平台 推送，实时获取执行结果
 - 🔄 **智能延迟** - 模拟人工操作，避免被检测
 - 📝 **详细日志** - 完整的执行日志记录，方便问题排查
 - 🎯 **任务管理** - 自动获取并完成各平台的日常任务
@@ -126,6 +126,7 @@
 ZaiZaiCat-Checkin/
 ├── config/                      # 配置文件目录
 │   └── token.json              # 统一的账号配置文件
+│   └── notification.json              # 统一的推送配置文件
 ├── script/                      # 脚本目录
 │   ├── enshan/                 # 恩山论坛
 │   │   ├── api.py             # API 接口封装
@@ -348,50 +349,109 @@ python3 smzdm/sign_daily_task/main.py
 
 - 脚本执行日志会同时输出到控制台和日志文件
 - 日志文件位置：各脚本目录下的 `.log` 文件
-- 青龙面板日志：在任务管理中查看执行日志
+- 青龙面板日志：在���务管理中查看执行日志
 
 ## 📱 通知推送
 
-本项目集成了 Bark 推送功能，可以将执行结果实时推送到你的 iOS 设备。
+本项目已扩展为支持多平台统一推送（而不仅限于 Bark），通过一个集中配置文件或环境变量进行管理。
+参考项目: [dailycheckin](https://github.com/Sitoi/dailycheckin)
 
-### 配置 Bark 推送
+支持的推送平台（示例，具体以 `notification.py` 中实现为准）：
+- Bark
+- Server酱 (SCKEY / SENDKEY)
+- Server酱 Turbo
+- CoolPush
+- Qmsg酱
+- Telegram
+- 飞书 (Feishu)
+- 钉钉 (DingTalk)
+- 企业微信群机器人
+- 企业微信应用消息
+- PushPlus
+- Gotify
+- Ntfy
+- PushDeer
 
-在青龙面板的 `config.sh` 或环境变量中添加：
+配置方式（优先级）
+1. `config/notification.json` 中的对应字段（推荐用于本地与容器持久化配置）
+2. 环境变量（适用于青龙面板或临时覆盖）
 
-```bash
-# 必需参数
-export BARK_PUSH="你的Bark设备Key或完整URL"
+配置文件位置
+- 文件路径：`config/notification.json`（已新增）
 
-# 可选参数
-export BARK_ICON="https://example.com/icon.png"  # 推送图标
-export BARK_SOUND="birdsong"                      # 推送声音
-export BARK_GROUP="签到通知"                       # 推送分组
-export BARK_LEVEL="active"                        # 推送级别
-export BARK_URL="https://example.com"             # 点击跳转URL
-```
+如何使用
+- 编辑 `config/notification.json` 添加或修改推送服务的配置（推荐）
+- 或在部署环境中通过环境变量设置对应字段（示例见下）
+- 在脚本中通过 `from notification import send_notification` 调用统一发送接口：
 
-### Bark 推送级别
-
-- `active`: 默认级别，立即亮屏显示通知
-- `timeSensitive`: 时效性通知，专注模式下也会显示
-- `passive`: 被动通知，不会立即显示
-
-### 推送示例
-
+示例：
 ```python
-from notification import send_notification, NotificationLevel, NotificationSound
-
-# 基础推送
-send_notification("签到成功", "今日签到已完成")
-
-# 自定义推送
-send_notification(
-    "重要通知",
-    "这是一条重要消息",
-    level=NotificationLevel.TIME_SENSITIVE,
-    sound=NotificationSound.ALARM
-)
+from notification import send_notification
+send_notification("签到结果", "账号 A: 成功\n账号 B: 失败")
 ```
+
+示例配置（`config/notification.json`）
+```json
+{
+  "bark": {
+    "push": "https://api.day.app/your_bark_key_or_url",
+    "icon": "",
+    "sound": "birdsong",
+    "group": "ZaiZaiCat-Checkin",
+    "level": "active",
+    "url": ""
+  },
+  "server": {
+    "sckey": "",
+    "sendkey": ""
+  },
+  "pushplus": {
+    "token": "",
+    "topic": ""
+  },
+  "pushdeer": {
+    "pushkey": "",
+    "url": "https://api2.pushdeer.com/message/push",
+    "type": "text"
+  },
+  "gotify": {
+    "url": "",
+    "token": "",
+    "priority": "3"
+  },
+  "ntfy": {
+    "url": "https://ntfy.sh",
+    "topic": "",
+    "priority": "3"
+  }
+}
+```
+
+常用环境变量（根据不同服务的字段名称）示例
+- BARK_PUSH
+- SCKEY / SENDKEY
+- PUSHPLUS_TOKEN
+- PUSHDEER_PUSHKEY (或 PUSHDEER_PUSHKEY)
+- GOTIFY_URL / GOTIFY_TOKEN
+- NTFY_TOPIC / NTFY_URL
+- QMSG_KEY
+- TG_BOT_TOKEN / TG_USER_ID
+- FSKEY
+- DINGTALK_ACCESS_TOKEN / DINGTALK_SECRET
+- QYWX_KEY / QYWX_CORPID / QYWX_AGENTID / QYWX_CORPSECRET / QYWX_TOUSER
+
+说明与注意事项
+- 推荐把敏感字段（如 pushkey、token、sckey）放在环境变量或不提交到仓库的配置文件中。
+- `notification.py` 的配置读取优先级为：配置文件 > 环境变量 > 默认值。
+- PushDeer 支持两种使用方式：
+  - 官方在线版：无需自架，使用 `https://api2.pushdeer.com/message/push` 并在 PushDeer 客户端创建 Key；保持 `pushdeer.url` 为默认即可。
+  - 自架服务端：将 `pushdeer.url` 指向你的服务地址（例如 `https://your-server.example/push`）。
+- 不同推送服务的消息格式与支持的特性（图片、Markdown 等）不同，`notification.py` 中会根据各平台的要求做适配。
+
+示例：通过 PushDeer 发送 Markdown 类型消息时，在 `config/notification.json` 中把 `pushdeer.type` 设置为 `markdown`，并在调用 `send_notification` 时把内容设置为 Markdown 格式。
+
+兼容性与扩展
+- 本文档描述的是当前版本支持的平台。如需添加新的推送渠道，可在 `notification.py` 中添加相应的加载、启用检测和发送函数，并在 `config/notification.json` 中加入配置。
 
 ## ❓ 常见问题
 
@@ -430,6 +490,11 @@ Cookie 有有效期限制，失效后需要重新获取并更新配置文件。�
 4. 检查文件权限是否正确
 
 ## 📝 更新日志
+
+### 2025-12-08
+- ✨ 支持多平台统一推送：在 `notification.py` 中新增 多平台推送 支持，并将各平台推送整合到统一接口 `send_notification`。
+- 🛠 新增推送配置文件：`config/notification.json`（支持从文件或环境变量加载配置，优先级：文件 > 环境 > 默认）。
+- 📝 更新 `README.md` 的“通知推送”文档，加入 使用说明、配置示例和常用环境变量说明。
 
 ### 2025-12-01
 - ✨ 新增 WPS Office 自动签到脚本
@@ -489,5 +554,4 @@ Cookie 有有效期限制，失效后需要重新获取并更新配置文件。�
 
 **⭐ 如果这个项目对你有帮助，欢迎给个 Star！**
 
-*最后更新: 2025-11-28*
-
+*最后更新: 2025-12-08*
