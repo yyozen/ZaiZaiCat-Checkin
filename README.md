@@ -6,19 +6,6 @@
 > 本项目中的大量代码由 AI 辅助编写生成，代码规范和格式可能存在不足之处，敬请见谅。  
 > 本项目仅供学习交流使用，请勿用于商业用途。使用本项目所造成的一切后果由使用者自行承担。
 
-## 📋 目录
-
-- [功能特性](#功能特性)
-- [支持平台](#支持平台)
-- [项目结构](#项目结构)
-- [环境要求](#环境要求)
-- [安装部署](#安装部署)
-- [配置说明](#配置说明)
-- [使用方法](#使用方法)
-- [通知推送](#通知推送)
-- [常见问题](#常见问题)
-- [更新日志](#更新日志)
-- [开源协议](#开源协议)
 
 ## ✨ 功能特性
 
@@ -62,46 +49,6 @@
 3. **Cookie 有效期**: 建议定期更新 Cookie 等认证信息，以保证脚本正常运行
 4. **测试建议**: 使用青龙命令拉取脚本可能会出现混乱的问题,建议直接clone整个项目到青龙的 scripts 目录下
 
-## 📁 项目结构
-
-```
-ZaiZaiCat-Checkin/
-├── config/                      # 配置文件目录
-│   └── token.json              # 统一的账号配置文件
-│   └── notification.json              # 统一的推送配置文件
-├── script/                      # 脚本目录
-│   ├── enshan/                 # 恩山论坛
-│   │   ├── api.py             # API 接口封装
-│   │   └── sign_in.py         # 签到脚本
-│   ├── kanxue/                 # 看雪论坛
-│   │   ├── api.py
-│   │   └── sign_in.py
-│   ├── sf/                     # 顺丰速运
-│   │   ├── api.py
-│   │   └── main.py
-│   ├── shyp/                   # 上海杨浦
-│   │   ├── api.py
-│   │   ├── main.py
-│   │   └── auto_buy.py        # 自动抢购脚本
-│   ├── huaruntong/             # 华润通
-│       ├── 999/               # 万象星
-│       ├── huaruntong_wx/     # 微信小程序
-│       ├── ole/               # Ole'精品超市
-│       └── wentiweilaihui/    # 文体未来荟
-│   ├── erke/                   # 鸿星尔克
-│       ├── api.py
-│       └── main.py
-│   └── wps/                    # WPS Office
-│       ├── api.py             # API接口和加密模块
-│       ├── main.py            # 主程序入口
-│       ├── README.md          # WPS脚本说明文档
-│       ├── QUICK_START.md     # 快速配置指南
-│       ├── CHANGES.md         # 修改说明
-│       └── test_config.py     # 配置测试脚本
-├── notification.py             # 通知推送模块
-├── LICENSE                     # MIT 开源协议
-└── README.md                   # 项目说明文档
-```
 
 ## 🔧 环境要求
 
@@ -114,32 +61,72 @@ ZaiZaiCat-Checkin/
 
 ## 📦 安装部署
 
-### 1. 克隆项目
+### 1. 青龙面板部署（推荐）
 
-```bash
-git clone https://github.com/Cat-zaizai/ZaiZaiCat-Checkin.git
-cd ZaiZaiCat-Checkin
-```
-
-### 2. 安装依赖
-
-```bash
-# 基础依赖
-pip install requests
-
-# WPS 签到需要的加密库
-pip install pycryptodome
-```
-
-### 3. 配置账号信息
-
-编辑 `config/token.json` 文件，按照平台添加账号信息。
-
-### 4. 青龙面板部署（推荐）
+**青龙部署教程**
 
 1. 将整个项目上传到青龙面板的 `scripts` 目录
 2. 在青龙面板中添加定时任务
 3. 配置环境变量（用于推送通知）
+
+#### 青龙命令行拉库
+
+```bash
+# ql repo <repo_url> <whitelist> <blacklist> <dependence> <branch> <extensions>
+ql repo https://github.com/Cat-zaizai/ZaiZaiCat-Checkin.git "main.py|sign_in.py" "" ".py|.js|.json" "" "ts js py json"
+```
+
+#### 青龙面板订阅
+
+`订阅管理 -> 创建订阅`，表单填写示例：
+- 名称：ZaiZaiCat-Checkin
+- 链接：https://github.com/Cat-zaizai/ZaiZaiCat-Checkin.git
+- 分支：`main`
+- 定时：`0 0 1 * * *`
+- 白名单：`main|sign_in`
+- 黑名单：`(留空)`
+- 依赖文件：`.py|.js|.json`
+- 文件后缀：`ts js py json`
+
+#### 通用环境变量与配置
+
+- 入口：`脚本管理 -> ZaiZaiCat-Checkin -> config`
+- `token.json`：项目所需账号配置文件
+- `notification.json`：统一推送配置文件
+
+#### 依赖下载安装
+- 入口：`依赖管理 -> Python3 -> 创建依赖`
+- 内容： PyExecJS pycryptodome
+
+> 说明：青龙拉库脚本默认定时规则为 `1 1 1 1 1`（不自动执行），如需运行请自行调整成对应任务所需的 cron 表达式。
+
+> 提示：如果拉取项目超时，可尝试使用 GitHub 镜像/加速服务，或切换网络后重试。
+
+
+
+### 2. 其他部署方式
+
+**其他部署教程**
+
+1. 克隆项目
+   ```bash
+   git clone https://github.com/Cat-zaizai/ZaiZaiCat-Checkin.git
+   cd ZaiZaiCat-Checkin
+   ```
+2. 安装依赖
+   ```bash
+   # 基础依赖
+   pip install requests
+
+   # WPS 签到需要的加密库
+   pip install pycryptodome
+   
+   # 顺丰脚本所需的依赖
+   pip install PyExecJS
+   ```
+3. 配置账号信息：编辑 `config/token.json` 为各平台添加账号配置。
+
+4. 添加定时任务
 
 **定时任务示例**:
 ```bash
@@ -162,8 +149,12 @@ pip install pycryptodome
 30 7 * * * python3 /ql/scripts/ZaiZaiCat-Checkin/script/wps/main.py
 
 # 什么值得买 - 每天 07:00
-0 7 * * * python3 /ql/scripts/ZaiZaiCat-Checkin/smzdm/sign_daily_task/main.py
+0 7 * * * python3 /ql/scripts/ZaiZaiCat-Checkin/script/smzdm/sign_daily_task/main.py
 ```
+
+### 3. 配置账号信息
+
+编辑 `config/token.json` 文件，按照平台添加账号信息。
 
 ## ⚙️ 配置说明
 
@@ -224,39 +215,6 @@ pip install pycryptodome
 - `device_id`: 从请求参数或请求头中获取
 - `formhash`/`csrf_token`: 从页面源码或请求中提取
 
-## 🚀 使用方法
-
-### 本地运行
-
-```bash
-# 运行顺丰速运签到
-python3 script/sf/main.py
-
-# 运行恩山论坛签到
-python3 script/enshan/sign_in.py
-
-# 运行看雪论坛签到
-python3 script/kanxue/sign_in.py
-
-# 运行上海云杨浦任务
-python3 script/shyp/main.py
-
-# 运行鸿星尔克签到
-python3 script/erke/main.py
-
-# 运行什么值得买任务
-python3 smzdm/sign_daily_task/main.py
-```
-
-### 青龙面板运行
-
-在青龙面板中配置定时任务后，脚本会按照设定的时间自动执行。
-
-### 查看日志
-
-- 脚本执行日志会同时输出到控制台和日志文件
-- 日志文件位置：各脚本目录下的 `.log` 文件
-- 青龙面板日志：在服务管理中查看执行日志
 
 ## 📱 通知推送
 
@@ -359,6 +317,48 @@ send_notification("签到结果", "账号 A: 成功\n账号 B: 失败")
 
 兼容性与扩展
 - 本文档描述的是当前版本支持的平台。如需添加新的推送渠道，可在 `notification.py` 中添加相应的加载、启用检测和发送函数，并在 `config/notification.json` 中加入配置。
+
+
+## 📁 项目结构
+
+```
+ZaiZaiCat-Checkin/
+├── config/                      # 配置文件目录
+│   └── token.json              # 统一的账号配置文件
+│   └── notification.json              # 统一的推送配置文件
+├── script/                      # 脚本目录
+│   ├── enshan/                 # 恩山论坛
+│   │   ├── api.py             # API 接口封装
+│   │   └── sign_in.py         # 签到脚本
+│   ├── kanxue/                 # 看雪论坛
+│   │   ├── api.py
+│   │   └── sign_in.py
+│   ├── sf/                     # 顺丰速运
+│   │   ├── api.py
+│   │   └── main.py
+│   ├── shyp/                   # 上海杨浦
+│   │   ├── api.py
+│   │   ├── main.py
+│   │   └── auto_buy.py        # 自动抢购脚本
+│   ├── huaruntong/             # 华润通
+│       ├── 999/               # 万象星
+│       ├── huaruntong_wx/     # 微信小程序
+│       ├── ole/               # Ole'精品超市
+│       └── wentiweilaihui/    # 文体未来荟
+│   ├── erke/                   # 鸿星尔克
+│       ├── api.py
+│       └── main.py
+│   └── wps/                    # WPS Office
+│       ├── api.py             # API接口和加密模块
+│       ├── main.py            # 主程序入口
+│       ├── README.md          # WPS脚本说明文档
+│       ├── QUICK_START.md     # 快速配置指南
+│       ├── CHANGES.md         # 修改说明
+│       └── test_config.py     # 配置测试脚本
+├── notification.py             # 通知推送模块
+├── LICENSE                     # MIT 开源协议
+└── README.md                   # 项目说明文档
+```
 
 ## ❓ 常见问题
 
