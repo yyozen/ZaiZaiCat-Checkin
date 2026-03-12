@@ -26,7 +26,7 @@
 | 🛒 华润通-Ole'  | `script/huaruntong/ole/main.py` | ❌ 不可用 | 需要动态获取微信code换取token |
 | 🎯 华润通-文体未来荟 | `script/huaruntong/wentiweilaihui/main.py` | ✅ 可用 | 支持签到和积分查询           |
 | 👟 鸿星尔克      | `script/erke/main.py` | ✅ 可用 | 支持签到和积分明细查询         |
-| 📝 WPS Office  | `script/wps/main.py` | ✅ 可用 | 支持自动签到和抽奖           |
+| 📝 WPS Office  | `script/wps/main.py` | ✅ 可用 | 支持任务中心和天天领福利双页面任务 |
 | 💰 什么值得买      | `script/smzdm/sign_daily_task/main.py` | ✅ 可用 | 支持每日签到和众测任务         |
 
 ### 状态说明
@@ -43,7 +43,24 @@
 3. **Cookie 有效期**: 建议定期更新 Cookie 等认证信息，以保证脚本正常运行
 4. **测试建议**: 使用青龙命令拉取脚本可能会出现混乱的问题,建议直接clone整个项目到青龙的 scripts 目录下
 
+## 📝 WPS 功能说明
+
+WPS 脚本目前包含两个活动页面：
+
+- `script/wps/task_center.py`：任务中心，支持签到、积分查询、抽奖
+- `script/wps/daily_benefits.py`：天天领福利，支持打卡免费领会员、会员免费试用、天天抽奖
+- `script/wps/main.py`：WPS 统一入口，按账号顺序依次执行上述两个页面任务
+
 ## 📝 更新日志
+
+### 2026-03-11
+- ✨ **WPS脚本升级为多页面任务**:
+  - 🧩 新增 `任务中心` 独立页面脚本
+  - 🎁 新增 `天天领福利` 页面脚本
+  - 📅 支持 `打卡免费领会员`
+  - 🪪 支持 `会员免费试用`
+  - 🎰 支持 `天天抽奖`
+  - 🔄 `script/wps/main.py` 统一执行两个页面任务
 
 ### 2025-12-18 
 - ✨ **WPS脚本新增抽奖相关任务**:

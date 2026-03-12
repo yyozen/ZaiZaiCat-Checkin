@@ -6,507 +6,246 @@ cron: 1 1 1 1 1
 """
 
 """
-WPS自动签到和抽奖脚本
+WPS 多页面任务入口脚本
 
-该脚本用于自动执行WPS的签到和抽奖任务，包括：
-- 读取账号配置信息
-- 获取RSA加密公钥
-- 执行签到操作
-- 执行抽奖操作
-- 推送执行结果
+当前统一执行以下活动页面：
+- 任务中心
+- 天天领福利
 
 Author: Assistant
-Date: 2025-12-01
-Updated: 2025-12-18
+Date: 2026-03-11
 """
 
-import json
 import logging
+import random
+import json
 import sys
-from typing import List, Dict, Any
+import time
 from pathlib import Path
-
-from api import WPSAPI
+from typing import Any, Dict, List, Tuple, Type
 
 # 获取项目根目录
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-# 导入需要的模块
+from daily_benefits import DailyBenefitsTasks
+from logging_utils import (
+    bind_logger,
+    configure_logging,
+    get_logger,
+    log_account_end,
+    log_account_start,
+    log_banner,
+    log_page_switch,
+    log_startup,
+)
 from notification import send_notification, NotificationSound
+from task_center import WPSTaskCenterPage
 
 
-class WPSTasks:
-    """WPS签到和抽奖任务自动化执行类"""
+class WPSMultiPageRunner:
+    """WPS 多页面任务统一入口"""
 
     def __init__(self, config_path: str = None):
-        """
-        初始化任务执行器
-
-        Args:
-            config_path (str): 配置文件的完整路径，如果为None则使用项目根目录下的config/token.json
-        """
-        # 设置配置文件路径
         if config_path is None:
             self.config_path = project_root / "config" / "token.json"
         else:
             self.config_path = Path(config_path)
 
-        self.accounts: List[Dict[str, Any]] = []
         self.logger = self._setup_logger()
-        self._init_accounts()
+        self.accounts: List[Dict[str, Any]] = self._load_accounts()
         self.account_results: List[Dict[str, Any]] = []
+        self.page_tasks: List[Tuple[str, Type]] = [
+            ("任务中心", WPSTaskCenterPage),
+            ("天天领福利", DailyBenefitsTasks),
+        ]
 
     def _setup_logger(self) -> logging.Logger:
-        """
-        设置日志记录器
+        configure_logging()
+        return bind_logger(get_logger("main"), page="主入口")
 
-        Returns:
-            logging.Logger: 配置好的日志记录器
-        """
-        logger = logging.getLogger(__name__)
-        logger.setLevel(logging.INFO)
-
-        # 创建控制台处理器
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-
-        # 设置日志格式
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        console_handler.setFormatter(formatter)
-
-        # 避免重复添加处理器
-        if not logger.handlers:
-            logger.addHandler(console_handler)
-
-        return logger
-
-    def _init_accounts(self):
-        """从配置文件中读取账号信息"""
+    def _load_accounts(self) -> List[Dict[str, Any]]:
+        """读取统一的 WPS 账号配置。"""
         if not self.config_path.exists():
-            self.logger.error(f"配置文件不存在: {self.config_path}")
             raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
 
-        try:
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                config_data = json.load(f)
-                # 从统一配置文件的 wps 节点读取
-                wps_config = config_data.get('wps', {})
-                self.accounts = wps_config.get('accounts', [])
+        with open(self.config_path, "r", encoding="utf-8") as file:
+            config_data = json.load(file)
 
-            if not self.accounts:
-                self.logger.warning("配置文件中没有找到 wps 账号信息")
-            else:
-                self.logger.info(f"成功加载 {len(self.accounts)} 个账号配置")
+        wps_config = config_data.get("wps", {})
+        accounts = wps_config.get("accounts", [])
+        if accounts:
+            self.logger.info("成功加载 %s 个 WPS 账号", len(accounts))
+        else:
+            self.logger.warning("配置文件中没有找到 WPS 账号信息")
+        return accounts
 
-        except json.JSONDecodeError as e:
-            self.logger.error(f"配置文件JSON解析失败: {e}")
-            raise
-        except Exception as e:
-            self.logger.error(f"读取配置文件失败: {e}")
-            raise
+    @staticmethod
+    def _is_auth_expired_result(page_result: Dict[str, Any]) -> bool:
+        """判断页面结果是否为登录态失效。"""
+        if page_result.get("auth_expired"):
+            return True
 
-    def process_account(self, account_info: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        处理单个账号的签到和抽奖任务
+        message = str(page_result.get("message", ""))
+        keywords = ("Token已过期", "ErrNotLogin", "userNotLogin", "未登录", "请重新登录")
+        return any(keyword in message for keyword in keywords)
 
-        Args:
-            account_info (Dict[str, Any]): 账号信息字典
-
-        Returns:
-            Dict[str, Any]: 处理结果
-        """
-        account_name = account_info.get('account_name', '未命名账号')
-        self.logger.info(f"\n{'=' * 60}")
-        self.logger.info(f"开始处理账号: {account_name}")
-        self.logger.info(f"{'=' * 60}")
-
-        result = {
-            'account_name': account_name,
-            'success': False,
-            'message': '',
-            'sign_info': {},
-            'sign_rewards': [],
-            'lottery_info': {},
-            'user_info': {}
-        }
-
-        try:
-            # 获取账号配置
-            user_id = account_info.get('user_id')
-            cookies = account_info.get('cookies', '')
-            user_agent = account_info.get('user_agent')
-
-            # 检查必需参数
-            if not user_id:
-                error_msg = "账号配置中缺少user_id，跳过签到"
-                self.logger.warning(f"⚠️ {account_name}: {error_msg}")
-                result['message'] = error_msg
-                return result
-
-            if not cookies:
-                error_msg = "账号配置中缺少cookies"
-                self.logger.error(f"❌ {error_msg}")
-                result['message'] = error_msg
-                return result
-
-            # 创建API实例
-            api = WPSAPI(cookies=cookies, user_agent=user_agent)
-
-            # 执行签到（通过签到接口判断token是否过期）
-            self.logger.info(f"\n{'=' * 60}")
-            self.logger.info(f"{account_name} - 执行签到")
-            self.logger.info(f"{'=' * 60}")
-
-            sign_result = api.sign_in(user_id=user_id)
-
-            if sign_result['success']:
-                result['success'] = True
-                result['sign_info'] = sign_result.get('data', {}) or {}
-
-                # 检查是否是今日已签到
-                if sign_result.get('already_signed'):
-                    result['message'] = '今日已签到'
-                    self.logger.info(f"✅ {account_name} 今日已签到")
-                else:
-                    result['message'] = '签到成功'
-                    self.logger.info(f"✅ {account_name} 签到成功")
-
-                    # 只有在签到成功（非已签到）时才提取签到奖励
-                    if result['sign_info']:
-                        rewards = result['sign_info'].get('rewards', [])
-                        reward_names = [reward.get('reward_name', '') for reward in rewards if reward.get('reward_name')]
-                        result['sign_rewards'] = reward_names
-
-                        # 打印签到奖励
-                        if reward_names:
-                            self.logger.info(f"🎁 签到奖励:")
-                            for idx, reward_name in enumerate(reward_names, 1):
-                                self.logger.info(f"   {idx}. {reward_name}")
-
-                # 打印完整签到详情(可选,已注释)
-                # self.logger.info(f"签到详情: {json.dumps(result['sign_info'], ensure_ascii=False, indent=2)}")
-            else:
-                error_msg = sign_result.get('error', '签到失败')
-                error_type = sign_result.get('error_type', '')
-
-                # 检查是否是token过期
-                if error_type == 'token_expired':
-                    result['message'] = 'Token已过期，请重新登录'
-                    self.logger.error(f"❌ {account_name} Token已过期，请重新登录")
-                    # Token过期时跳过后续所有任务
-                    return result
-                else:
-                    result['message'] = error_msg
-                    self.logger.error(f"❌ {account_name} 签到失败: {error_msg}")
-                    # 签到失败也跳过后续任务
-                    return result
-
-            # 获取签到后的用户信息（包含最新的抽奖次数）
-            self.logger.info(f"\n{'=' * 60}")
-            self.logger.info(f"{account_name} - 获取签到后的用户信息")
-            self.logger.info(f"{'=' * 60}")
-
-            user_info_result = api.get_user_info()
-
-            if user_info_result['success']:
-                result['user_info'] = user_info_result
-                self.logger.info(f"✅ {account_name} 用户信息获取成功")
-                self.logger.info(f"📊 抽奖次数: {user_info_result.get('lottery_times', 0)} 次")
-                self.logger.info(f"💰 当前积分: {user_info_result.get('points', 0)}")
-                self.logger.info(f"⏰ 即将过期积分: {user_info_result.get('advent_points', 0)}")
-            else:
-                error_msg = user_info_result.get('error', '获取用户信息失败')
-                self.logger.warning(f"⚠️ {account_name} 获取用户信息失败: {error_msg}")
-                # 获取用户信息失败不影响后续流程，继续执行
-
-            # 执行抽奖任务
-            self.logger.info(f"\n{'=' * 60}")
-            self.logger.info(f"{account_name} - 执行抽奖任务")
-            self.logger.info(f"{'=' * 60}")
-
-            # 获取抽奖次数和组件信息
-            lottery_times = result['user_info'].get('lottery_times', 0)
-            component_number = result['user_info'].get('lottery_component_number', 'ZJ2025092916515917')
-            component_node_id = result['user_info'].get('lottery_component_node_id', 'FN1762346087mJlk')
-
-            # 获取最大抽奖次数限制（从账号配置中读取，如果没有则默认为2）
-            default_max_lottery = 5
-            max_lottery_limit = account_info.get('max_lottery_limit')
-
-            # 检查是否自定义了最大抽奖次数
-            if max_lottery_limit is None:
-                # 没有设置，使用默认值
-                max_lottery_limit = default_max_lottery
-                is_custom_limit = False
-            else:
-                # 已设置自定义值
-                is_custom_limit = True
-
-            # 实际执行的抽奖次数为可用次数和限制次数中的较小值
-            actual_lottery_times = min(lottery_times, max_lottery_limit)
-
-            if lottery_times > 0:
-                self.logger.info(f"🎲 {account_name} 有 {lottery_times} 次抽奖机会")
-
-                # 根据是否自定义显示不同的提示信息
-                if is_custom_limit:
-                    self.logger.info(f"⚙️  最大抽奖次数限制: {max_lottery_limit} 次")
-                else:
-                    self.logger.info(f"⚙️  最大抽奖次数限制: {max_lottery_limit} 次（默认值，如需自定义请在token.json中添加max_lottery_limit字段）")
-
-                self.logger.info(f"🎯 本次将执行 {actual_lottery_times} 次抽奖")
-
-                lottery_results = []
-                prize_list = []
-
-                for i in range(actual_lottery_times):
-                    # 随机延迟 1-3 秒
-                    import random
-                    import time
-                    delay = random.uniform(1, 3)
-                    self.logger.info(f"⏱️  等待 {delay:.1f} 秒后进行第 {i+1}/{actual_lottery_times} 次抽奖...")
-                    time.sleep(delay)
-
-                    # 执行抽奖
-                    lottery_result = api.lottery(
-                        component_number=component_number,
-                        component_node_id=component_node_id
-                    )
-
-                    lottery_results.append(lottery_result)
-
-                    if lottery_result['success']:
-                        prize_name = lottery_result.get('prize_name', '未知奖品')
-                        prize_list.append(prize_name)
-                        self.logger.info(f"🎁 第 {i+1} 次抽奖成功！获得: {prize_name}")
-                    else:
-                        error_type = lottery_result.get('error_type', '')
-                        error_msg = lottery_result.get('error', '抽奖失败')
-
-                        # 检查是否是token过期
-                        if error_type == 'token_expired':
-                            self.logger.error(f"❌ {account_name} Token已过期，停止抽奖")
-                            break
-                        else:
-                            self.logger.error(f"❌ 第 {i+1} 次抽奖失败: {error_msg}")
-
-                # 保存抽奖结果
-                result['lottery_info'] = {
-                    'total_attempts': actual_lottery_times,
-                    'successful_draws': len([r for r in lottery_results if r['success']]),
-                    'results': lottery_results,
-                    'prizes': prize_list
-                }
-
-                # 输出抽奖统计
-                if prize_list:
-                    self.logger.info(f"🎉 {account_name} 抽奖完成！共获得 {len(prize_list)} 个奖品:")
-                    for idx, prize in enumerate(prize_list, 1):
-                        self.logger.info(f"   {idx}. {prize}")
-                else:
-                    self.logger.info(f"📭 {account_name} 抽奖完成，未中奖")
-            else:
-                self.logger.info(f"📭 {account_name} 没有抽奖次数")
-
-            # 获取任务完成后的最新用户信息
-            self.logger.info(f"\n{'=' * 60}")
-            self.logger.info(f"{account_name} - 获取任务完成后的最新信息")
-            self.logger.info(f"{'=' * 60}")
-
-            final_user_info = api.get_user_info()
-            if final_user_info['success']:
-                result['final_user_info'] = final_user_info
-                self.logger.info(f"✅ {account_name} 最新信息获取成功")
-                self.logger.info(f"📊 剩余抽奖次数: {final_user_info.get('lottery_times', 0)} 次")
-                self.logger.info(f"💰 当前积分: {final_user_info.get('points', 0)}")
-                self.logger.info(f"⏰ 即将过期积分: {final_user_info.get('advent_points', 0)}")
-            else:
-                self.logger.warning(f"⚠️ {account_name} 获取最新信息失败")
-
-
-        except Exception as e:
-            error_msg = f"处理账号时发生异常: {str(e)}"
-            self.logger.error(f"❌ {error_msg}")
-            result['message'] = error_msg
-            import traceback
-            traceback.print_exc()
-
-        return result
-
-    def run(self):
-        """执行所有账号的签到和抽奖任务"""
-        import random
-        import time
-
-        self.logger.info("=" * 60)
-        self.logger.info("WPS自动签到和抽奖任务开始")
-        self.logger.info("=" * 60)
+    def run(self) -> None:
+        """按账号顺序执行所有页面任务。"""
+        log_startup(self.logger, len(self.accounts))
+        self.logger.info("")
 
         if not self.accounts:
             self.logger.warning("没有需要处理的账号")
             return
 
-        # 处理每个账号
-        for idx, account_info in enumerate(self.accounts):
-            result = self.process_account(account_info)
-            self.account_results.append(result)
+        page_runners = [
+            (
+                page_name,
+                task_class(config_path=str(self.config_path), enable_notification=False, load_accounts=False)
+            )
+            for page_name, task_class in self.page_tasks
+        ]
 
-            # 在处理完一个账号后，如果还有下一个账号，则等待5-10秒
-            if idx < len(self.accounts) - 1:
-                delay = random.uniform(5, 10)
-                self.logger.info(f"\n⏱️  等待 {delay:.1f} 秒后处理下一个账号...")
+        for account_index, account_info in enumerate(self.accounts):
+            account_name = account_info.get("account_name", "未命名账号")
+            account_result = {
+                "account_name": account_name,
+                "success": True,
+                "pages": []
+            }
+
+            account_logger = bind_logger(self.logger, account=account_name)
+            log_account_start(self.logger, account_name)
+
+            for page_index, (page_name, page_runner) in enumerate(page_runners):
+                page_logger = bind_logger(account_logger, step=page_name)
+                try:
+                    page_result = page_runner.process_account(account_info)
+                except Exception as exc:
+                    page_result = {
+                        "account_name": account_name,
+                        "success": False,
+                        "message": f"{page_name}执行异常: {exc}"
+                    }
+                    self.logger.error("%s 页面执行失败: %s", page_name, exc)
+                    import traceback
+                    traceback.print_exc()
+
+                account_result["pages"].append({
+                    "page_name": page_name,
+                    "result": page_result
+                })
+
+                if not page_result.get("success", False):
+                    account_result["success"] = False
+
+                if self._is_auth_expired_result(page_result):
+                    self.logger.warning("[%s] 登录态已失效，停止执行该账号后续页面任务", account_name)
+                    break
+
+                if page_index < len(page_runners) - 1:
+                    delay = random.uniform(1, 2)
+                    self.logger.info("")
+                    time.sleep(delay)
+
+            self.account_results.append(account_result)
+            if account_index < len(self.accounts) - 1:
+                delay = random.uniform(3, 6)
+                log_account_end(self.logger, account_name, account_result["success"], delay)
+                self.logger.info("")
                 time.sleep(delay)
+            else:
+                log_account_end(self.logger, account_name, account_result["success"])
 
-        # 输出统计信息
         self._print_summary()
-
-        # 发送通知
         self._send_notification()
 
-    def _print_summary(self):
-        """打印执行结果统计"""
-        self.logger.info("\n" + "=" * 60)
-        self.logger.info("执行结果统计")
-        self.logger.info("=" * 60)
+    def _print_summary(self) -> None:
+        """打印账号级页面汇总结果。"""
+        self.logger.info("")
+        log_banner(self.logger, "多页面任务执行结果统计")
 
         total = len(self.account_results)
-        success = sum(1 for r in self.account_results if r['success'])
+        success = sum(1 for item in self.account_results if item["success"])
         failed = total - success
 
-        self.logger.info(f"总账号数: {total}")
-        self.logger.info(f"签到成功: {success}")
-        self.logger.info(f"签到失败: {failed}")
+        self.logger.info("总账号数: %s", total)
+        self.logger.info("执行成功: %s", success)
+        self.logger.info("执行失败: %s", failed)
 
-        # 统计抽奖信息
-        prize_summary = {}
-        total_attempts = 0
-        total_successful_draws = 0
+        for item in self.account_results:
+            status = "✅ 成功" if item["success"] else "❌ 失败"
+            self.logger.info("%s: %s", item["account_name"], status)
+            for page_item in item["pages"]:
+                page_result = page_item["result"]
+                self.logger.info(
+                    "  - %s: %s",
+                    page_item["page_name"],
+                    page_result.get("message", "")
+                )
 
-        for result in self.account_results:
-            if result.get('lottery_info'):
-                lottery_info = result['lottery_info']
-                # 从新的数据结构中提取所有抽奖结果
-                lottery_results = lottery_info.get('results', [])
+        self.logger.info("%s", "=" * 60)
 
-                for single_result in lottery_results:
-                    if single_result['success']:
-                        lottery_data = single_result.get('data', {})
-                        prize_name = lottery_data.get('prize_name', '未知')
-                        if prize_name and prize_name != '未知' and prize_name != '未中奖':
-                            prize_summary[prize_name] = prize_summary.get(prize_name, 0) + 1
-
-                # 统计抽奖次数
-                total_attempts += lottery_info.get('total_attempts', 0)
-                total_successful_draws += lottery_info.get('successful_draws', 0)
-
-        if total_attempts > 0:
-            self.logger.info(f"\n📊 抽奖统计: 总共尝试 {total_attempts} 次，成功 {total_successful_draws} 次")
-
-        if prize_summary:
-            self.logger.info("\n🎁 奖品统计:")
-            for prize, count in prize_summary.items():
-                self.logger.info(f"  {prize}: {count}个")
-
-        # 打印详细结果
-        self.logger.info("\n详细结果:")
-        for result in self.account_results:
-            status = "✅ 成功" if result['success'] else "❌ 失败"
-            self.logger.info(f"  {result['account_name']}: {status} - {result['message']}")
-
-        self.logger.info("=" * 60)
-
-    def _send_notification(self):
-        """发送推送通知"""
+    def _send_notification(self) -> None:
+        """统一发送所有页面的汇总通知。"""
         if not self.account_results:
             return
 
         total = len(self.account_results)
-        success = sum(1 for r in self.account_results if r['success'])
+        success = sum(1 for item in self.account_results if item["success"])
         failed = total - success
 
-        # 构造通知标题
-        title = "WPS签到和抽奖结果通知"
-
-        # 构造通知内容
         content_lines = [
             f"📊 总账号数: {total}",
-            f"✅ 签到成功: {success}",
-            f"❌ 签到失败: {failed}",
-            ""
+            f"✅ 执行成功: {success}",
+            f"❌ 执行失败: {failed}",
+            "",
+            "📋 详细结果:"
         ]
 
-        content_lines.append("📋 详细结果:")
-        for result in self.account_results:
-            status = "✅" if result['success'] else "❌"
-            content_lines.append(f"{status} {result['account_name']}: {result['message']}")
+        page_line_builders = {
+            WPSTaskCenterPage.page_name: WPSTaskCenterPage.build_notification_lines,
+            DailyBenefitsTasks.page_name: DailyBenefitsTasks.build_notification_lines,
+        }
 
-            # 添加签到奖励信息
-            sign_rewards = result.get('sign_rewards', [])
-            if sign_rewards:
-                content_lines.append(f"    🎁 签到奖励: {', '.join(sign_rewards)}")
+        for account_result in self.account_results:
+            status = "✅" if account_result["success"] else "❌"
+            content_lines.append(f"{status} {account_result['account_name']}")
 
-            # 添加抽奖结果信息
-            lottery_info = result.get('lottery_info')
-            if lottery_info:
-                lottery_results = lottery_info.get('results', [])
-                if lottery_results:
-                    content_lines.append("    🎲 抽奖结果:")
-                    for idx, single_result in enumerate(lottery_results, 1):
-                        if single_result['success']:
-                            # 直接从single_result获取prize_name，因为api.py返回的数据结构中prize_name在第一层
-                            prize_name = single_result.get('prize_name', '未知')
-                            content_lines.append(f"       第{idx}次: {prize_name}")
-                        else:
-                            # 抽奖失败的情况
-                            error_msg = single_result.get('error', '抽奖失败')
-                            content_lines.append(f"       第{idx}次: {error_msg}")
+            for page_item in account_result["pages"]:
+                page_name = page_item["page_name"]
+                page_result = page_item["result"]
+                line_builder = page_line_builders.get(page_name)
+                if line_builder is None:
+                    content_lines.append(f"    [{page_name}] {page_result.get('message', '')}")
+                    continue
+                content_lines.extend(line_builder(page_result))
 
-            # 添加账户信息
-            final_info = result.get('final_user_info', {}) or {}
-            if final_info.get('success'):
-                content_lines.append(
-                    f"    📊 账户信息: 抽奖次数 {final_info.get('lottery_times', 0)} | 积分 {final_info.get('points', 0)} | 即将过期 {final_info.get('advent_points', 0)}"
-                )
-            else:
-                content_lines.append("    ⚠️ 账户信息获取失败")
-
-            # 在每个账号之间添加空行（最后一个账号除外）
-            if result != self.account_results[-1]:
+            if account_result != self.account_results[-1]:
                 content_lines.append("")
 
-        content = "\n".join(content_lines)
-
-        # 发送通知
         try:
             send_notification(
-                title=title,
-                content=content,
+                title="WPS多页面任务结果通知",
+                content="\n".join(content_lines),
                 sound=NotificationSound.BIRDSONG
             )
-            self.logger.info("✅ 推送通知已发送")
-        except Exception as e:
-            self.logger.warning(f"⚠️ 发送推送通知失败: {str(e)}")
+            self.logger.info("统一推送通知已发送")
+        except Exception as exc:
+            self.logger.warning("发送统一推送通知失败: %s", exc)
 
 
-def main():
+def main() -> None:
     """主函数"""
     try:
-        # 创建任务执行器
-        tasks = WPSTasks()
-
-        # 执行任务
-        tasks.run()
-
-    except FileNotFoundError as e:
-        print(f"❌ 错误: {e}")
-        print("请确保配置文件存在并包含WPS账号信息")
+        WPSMultiPageRunner().run()
+    except FileNotFoundError as exc:
+        print(f"❌ 错误: {exc}")
+        print("请确保配置文件存在并包含 WPS 账号信息")
         sys.exit(1)
-    except Exception as e:
-        print(f"❌ 发生未知错误: {e}")
+    except Exception as exc:
+        print(f"❌ 发生未知错误: {exc}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

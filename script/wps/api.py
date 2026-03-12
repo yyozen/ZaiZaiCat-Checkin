@@ -19,6 +19,7 @@ from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
 
 
 class WPSEncryption:
