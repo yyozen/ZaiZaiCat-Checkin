@@ -159,19 +159,10 @@ python main.py
 1. 打开「任务计划程序」→ 创建基本任务
 2. 触发器：每天，建议设在 `07:00`~`09:00` 之间
 3. 操作：启动程序
-   - 程序：`python` 的完整路径，例如 `D:\python312\python.exe`
-   - 参数：`main.py`
-   - 起始于：`D:\test\qiandao\script\workbuddy`
+   - 程序：`python.exe` 的完整路径
+   - 参数：`main.py` 的完整路径（如 `C:\qiandao\script\workbuddy\main.py`）
 
-> **起始于必须填写**，否则脚本找不到项目根目录下的配置文件。
-
-命令行一键创建（管理员 PowerShell，路径按实际情况替换）：
-
-```powershell
-schtasks /create /tn "WorkBuddy签到" /tr "D:\test\qiandao\script\workbuddy\run.bat" /sc daily /st 08:30 /f
-```
-
-> 已通过 `run.bat` 启动器执行，内部使用 `pythonw.exe` 静默运行（不弹黑窗口），并自动切换到脚本目录，无需手动设置「起始于」。如需在锁屏/未登录时也执行，可在任务计划程序中把「安全选项」改为「不管用户是否登录都要运行」并保存密码。
+> 脚本会自动定位项目根目录并读取配置，无需设置「起始于」。如需在锁屏/未登录时也执行，可把任务的「安全选项」改为「不管用户是否登录都要运行」并保存密码。
 
 ### 青龙面板
 
