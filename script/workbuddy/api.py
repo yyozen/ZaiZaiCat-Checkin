@@ -146,11 +146,11 @@ class WorkBuddyAPI:
         except requests.RequestException as e:
             return {'success': False, 'error': f'请求 {path} 失败: {e}', 'error_type': 'network'}
 
-        # 401/403 视为令牌失效
-        if response.status_code in (401, 403):
+        # 仅 401 视为令牌失效；403 通常是网关拦截（如 UA 校验），保留响应体信息走通用分支
+        if response.status_code == 401:
             return {
                 'success': False,
-                'error': f'令牌已失效 (http={response.status_code})',
+                'error': '令牌已失效 (http=401)',
                 'error_type': 'token_expired',
             }
 
@@ -176,7 +176,7 @@ class WorkBuddyAPI:
         code = body.get('code', -1)
         if code != 0:
             error_type = 'business'
-            if code in (401, 403) or '登录' in str(message) or 'token' in str(message).lower():
+            if code == 401 or '登录' in str(message) or 'token' in str(message).lower():
                 error_type = 'token_expired'
             return {
                 'success': False,

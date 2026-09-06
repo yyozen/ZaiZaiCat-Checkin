@@ -133,11 +133,13 @@ class WorkBuddyTasks:
             if api.domain:
                 accounts[account_index]['domain'] = api.domain
 
-            with open(self.config_path, 'w', encoding='utf-8') as f:
+            # 原子写入：先写临时文件再替换，避免进程中断导致配置文件截断损坏
+            tmp_path = self.config_path.with_suffix('.json.tmp')
+            with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.config_path)
 
             self.logger.info("💾 新令牌已写回配置文件")
-
         except Exception as e:
             self.logger.warning(f"⚠️ 回写令牌失败: {e}")
 
@@ -191,8 +193,8 @@ class WorkBuddyTasks:
             if not status['success']:
                 error_msg = status.get('error', '查询签到状态失败')
                 if status.get('error_type') == 'token_expired':
-                    result['message'] = '令牌已过期，请重新导入账号'
-                    self.logger.error(f"❌ {account_name} 令牌已过期，请重新导入账号")
+                    result['message'] = f'{error_msg}，请重新导入账号'
+                    self.logger.error(f"❌ {account_name} {result['message']}")
                 else:
                     result['message'] = error_msg
                     self.logger.error(f"❌ {account_name} {error_msg}")

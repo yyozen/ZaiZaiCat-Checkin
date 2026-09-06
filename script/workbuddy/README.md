@@ -7,8 +7,8 @@ WorkBuddy（腾讯 CodeBuddy）每日签到脚本，支持多账号、令牌自�
 ## ✨ 功能特性
 
 - 🔐 **多账号支持** - 依次处理配置中的所有账号，账号间随机延迟 5-10 秒
-- 📥 **账号导入** - 从 cockpit-tools 批量导入账号，无需手动抄写令牌
-- 🔄 **自动同步** - 每次签到前自动从本机 cockpit-tools 拉取最新令牌（未安装则跳过）
+- 📥 **账号导入** - 一键导入官方 WorkBuddy 客户端当前登录账号，无需手动抓包；也支持从 cockpit-tools 批量导入
+- 🔄 **自动同步** - 每次签到前自动从本机官方客户端 / cockpit-tools 拉取最新令牌
 - 🔁 **令牌自动续期** - `access_token` 过期时用 `refresh_token` 自动换新并写回配置
 - 🎯 **智能判重** - 先查签到状态，今日已签到则跳过，不重复请求
 - ⏱️ **随机错峰** - 启动后在时间窗口内随机延迟，避开请求高峰
@@ -20,12 +20,12 @@ WorkBuddy（腾讯 CodeBuddy）每日签到脚本，支持多账号、令牌自�
 |------|------|
 | `main.py` | 主入口，多账号签到编排与结果推送 |
 | `api.py` | 接口封装：签到状态查询、每日签到、令牌刷新 |
-| `import_accounts.py` | 账号导入工具 |
+| `import_accounts.py` | 账号导入工具：官方客户端 / cockpit-tools / JSON 文件 |
 
 ## 📦 安装依赖
 
 ```bash
-pip install requests
+pip install requests pycryptodome
 ```
 
 ## ⚙️ 配置说明
@@ -66,15 +66,19 @@ pip install requests
 
 ## 📥 导入账号
 
-### 方式一：从 cockpit-tools 自动导入（推荐）
+### 方式一：从官方 WorkBuddy 客户端导入（推荐）
 
-如果本机装了 cockpit-tools 并已登录 WorkBuddy 账号，直接运行：
+本机登录过 [WorkBuddy / CodeBuddy](https://www.codebuddy.cn) 桌面客户端的话，直接运行：
 
 ```bash
 python import_accounts.py
 ```
 
-脚本会自动探测 cockpit-tools 的数据目录（含 `C:/Users/用户名/.antigravity_cockpit`），读取其中的账号并写入 `config/token.json`。
+脚本会自动探测官方客户端凭据库（`%APPDATA%/WorkBuddy/User/globalStorage/state.vscdb`），解密并导入**当前登录账号**，无需抓包。逻辑与 [cockpit-tools](https://github.com/jlcodes99/cockpit-tools) 的本机导入功能对齐（Windows 使用 DPAPI + AES-GCM 解密，macOS 使用 Keychain + AES-CBC）。
+
+### 方式二：从 cockpit-tools 导入
+
+如果本机装了 [cockpit-tools](https://github.com/jlcodes99/cockpit-tools) 并管理了多个 WorkBuddy 账号，同样直接运行 `python import_accounts.py` 即可——脚本会同时探测 cockpit-tools 数据目录（含 `C:/Users/用户名/.antigravity_cockpit`），批量导入全部账号。
 
 > **加密账号自动解密**：cockpit-tools 新版将账号以 AES-256-GCM 加密存储，密钥在本机 `secure-account-storage.key`。导入工具会自动找到该密钥并解密，无需任何额外操作。明文与加密两种格式均已兼容。
 
@@ -84,9 +88,9 @@ python import_accounts.py
 python import_accounts.py --list
 ```
 
-### 方式二：指定路径导入
+### 方式三：指定路径导入
 
-自动探测失败时（例如 cockpit-tools 装在非默认位置），手动指定目录：
+自动探测失败时（例如客户端装在非默认位置），手动指定目录：
 
 ```bash
 python import_accounts.py --path "C:/Users/你的用户名/AppData/Roaming/cockpit-tools"
@@ -100,11 +104,11 @@ python import_accounts.py --path "D:/backup/my_accounts.json"
 
 ### 导入行为说明
 
-- 按 `uid`（无则用 `email`）去重，**重复导入不会产生重复账号**
+- 按 `uid`（无则用 `email`）去重，**重复导入不会产生重复账号**（官方客户端与 cockpit-tools 来源之间同样自动合并）
 - 已存在的账号只更新令牌等认证信息，**保留你自定义的 `account_name`**
 - cockpit-tools 的索引文件 `workbuddy_accounts.json` 只有摘要没有令牌，会自动跳过
 
-### 方式三：手动填写
+### 方式四：手动填写
 
 抓包获取令牌后，按上文配置格式手动填入 `config/token.json`。
 
@@ -121,7 +125,7 @@ python import_accounts.py --path "D:/backup/my_accounts.json"
 
 ### 与 cockpit-tools 并行使用
 
-[cockpit-tools](https://github.com/jlcodes99/cockpit-tools) 的自动签到会在执行时刷新令牌（refresh token 轮换），这会使 `config/token.json` 里的旧令牌立即失效。脚本已内置应对：**每次签到前自动从本机 cockpit-tools 数据目录同步最新令牌**（未安装 cockpit-tools 时自动跳过，不影响独立使用）。若两边的自动签到都已开启，建议二选一，避免重复签到。
+[cockpit-tools](https://github.com/jlcodes99/cockpit-tools) 的自动签到会在执行时刷新令牌（refresh token 轮换），这会使 `config/token.json` 里的旧令牌立即失效。脚本已内置应对：**每次签到前自动从本机官方客户端 / cockpit-tools 同步最新令牌**（两者都没有时自动跳过，不影响独立使用）。若两边的自动签到都已开启，建议二选一，避免重复签到。
 
 ## 🚀 使用方法
 
