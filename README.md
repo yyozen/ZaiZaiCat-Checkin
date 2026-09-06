@@ -28,6 +28,7 @@
 | 👟 鸿星尔克      | `script/erke/main.py` | ✅ 可用 | 支持签到和积分明细查询         |
 | 📝 WPS Office  | `script/wps/main.py` | ✅ 可用 | 支持任务中心和天天领福利双页面任务 |
 | 💰 什么值得买      | `script/smzdm/sign_daily_task/main.py` | ✅ 可用 | 支持每日签到和众测任务         |
+| 🤖 WorkBuddy    | `script/workbuddy/main.py` | ✅ 可用 | 支持每日签到、令牌自动续期与多账号管理 |
 
 ### 状态说明
 
@@ -51,7 +52,25 @@ WPS 脚本目前包含两个活动页面：
 - `script/wps/daily_benefits.py`：天天领福利，支持打卡免费领会员、会员免费试用、天天抽奖
 - `script/wps/main.py`：WPS 统一入口，按账号顺序依次执行上述两个页面任务
 
+## 📝 WorkBuddy 功能说明
+
+WorkBuddy（CodeBuddy）每日签到脚本，接口实现参考 [cockpit-tools](https://github.com/jlcodes99/cockpit-tools) 项目，与官方客户端行为保持一致：
+
+- `script/workbuddy/api.py`：接口封装，签到状态查询（双端点回退）、每日签到、令牌刷新
+- `script/workbuddy/import_accounts.py`：账号导入工具，支持从本机 cockpit-tools 数据目录自动导入（含加密账号自动解密），也支持指定 JSON 文件导入
+- `script/workbuddy/main.py`：统一入口，多账号签到编排、令牌自动续期与结果推送
+
+支持每日签到、连签奖励、多账号管理、令牌自动续期（access_token 60 天 / refresh_token 90 天，自动轮换续期），安装 cockpit-tools 的用户可在签到前自动同步最新令牌。详见 [script/workbuddy/README.md](script/workbuddy/README.md)。
+
 ## 📝 更新日志
+
+### 2026-09-06
+- ✨ **新增 WorkBuddy(CodeBuddy) 自动签到模块**:
+  - 📅 支持每日自动签到与连签奖励
+  - 🔄 支持令牌过期自动刷新并回写配置
+  - 📥 支持从本机 cockpit-tools 一键导入账号（含加密存储自动解密）
+  - ⏱️ 内置启动随机延迟与账号间随机间隔，自动错峰
+  - 📊 签到结果通过统一推送模块通知
 
 ### 2026-03-11
 - ✨ **WPS脚本升级为多页面任务**:

@@ -179,5 +179,18 @@
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/"
       }
     ]
+  },
+  "workbuddy": {
+    "accounts": [
+      {
+        "account_name": "主号",
+        "email": "you@example.com",
+        "access_token": "你的访问令牌",
+        "refresh_token": "你的刷新令牌",
+        "uid": "你的用户ID",
+        "enterprise_id": "",
+        "domain": "www.codebuddy.cn"
+      }
+    ]
   }
 }
