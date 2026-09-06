@@ -3,21 +3,22 @@
 """
 WorkBuddy账号导入工具
 
-将 cockpit-tools (https://github.com/jlcodes99/cockpit-tools) 管理的 WorkBuddy 账号
-批量导入到本项目的 config/token.json 中的 workbuddy 节点。
+将本机已有的 WorkBuddy 账号批量导入到本项目的 config/token.json 中的 workbuddy 节点。
 
 支持的导入来源：
-1. 自动探测本机 cockpit-tools 数据目录（默认行为）
-2. 指定 cockpit-tools 数据目录或 workbuddy_accounts 目录
-3. 指定单个账号 JSON 文件，或包含账号数组的 JSON 文件
+1. 官方 WorkBuddy 客户端（自动探测，读取当前登录账号，逻辑对齐 cockpit-tools 原版本机导入）
+2. cockpit-tools 数据目录（批量导入其管理的全部账号）
+3. 指定账号 JSON 文件，或包含账号数组的 JSON 文件
 
-账号存储兼容两种格式：
-- 明文：直接包含 access_token 字段
-- 加密：cockpit-tools 新版使用 AES-256-GCM 加密（字段 ciphertext/nonce），
-       本工具会用本机 secure-account-storage.key 自动解密
+官方客户端凭据存储（对齐 cockpit-tools 实现）：
+- 数据库：%APPDATA%/WorkBuddy/User/globalStorage/state.vscdb（macOS/Linux 对应各自目录）
+- 读取 ItemTable 中 secret://{"extensionId":"tencent-cloud.coding-copilot","key":"planning-genie.new.accessTokencn"}
+- Windows：Local State 的 os_crypt.encrypted_key 经 DPAPI 解出 AES 密钥，AES-256-GCM（v10 前缀）
+- macOS：Keychain "WorkBuddy Safe Storage" + PBKDF2-SHA1 派生密钥，AES-128-CBC（v10 前缀）
+- token 兼容 "uid+token" 拼接格式
 
 使用示例：
-    python import_accounts.py                      # 自动探测并导入
+    python import_accounts.py                      # 官方客户端 + cockpit-tools 自动探测导入
     python import_accounts.py --list               # 仅预览，不写入配置
     python import_accounts.py --path D:/xxx.json   # 从指定文件导入
     python import_accounts.py --path D:/xxx/dir    # 从指定目录导入
@@ -25,8 +26,11 @@ WorkBuddy账号导入工具
 
 import argparse
 import base64
+import hashlib
 import json
 import os
+import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,11 +44,272 @@ ACCOUNTS_DIR_NAME = "workbuddy_accounts"
 # 加密账号使用的本地密钥文件名
 KEY_FILE_NAME = "secure-account-storage.key"
 
+# 官方 WorkBuddy 客户端的 Secret Storage 标识（与 cockpit-tools 原版一致）
+OFFICIAL_EXTENSION_ID = 'tencent-cloud.coding-copilot'
+OFFICIAL_SECRET_KEY = 'planning-genie.new.accessTokencn'
+
 try:
     from Crypto.Cipher import AES
     HAS_CRYPTO = True
 except ImportError:
     HAS_CRYPTO = False
+
+# HAS_CRYPTO 为 False 时只提示一次，避免逐文件刷屏
+_crypto_warned = False
+
+
+def _warn_no_crypto() -> None:
+    """遇到加密账号但缺少 pycryptodome 时给出一次性安装提示"""
+    global _crypto_warned
+    if not _crypto_warned:
+        _crypto_warned = True
+        print("⚠️  检测到加密存储的账号，但缺少 pycryptodome，无法解密（pip install pycryptodome）")
+
+
+def find_official_client_db() -> Optional[Path]:
+    """
+    定位官方 WorkBuddy 客户端凭据数据库（对齐 cockpit-tools get_default_workbuddy_state_db_path）
+
+    Returns:
+        Optional[Path]: state.vscdb 路径，未找到返回 None
+    """
+    roots: List[Path] = []
+    if sys.platform == 'win32':
+        appdata = os.environ.get('APPDATA') or str(Path.home() / 'AppData' / 'Roaming')
+        roots.append(Path(appdata) / 'WorkBuddy')
+    elif sys.platform == 'darwin':
+        roots.append(Path.home() / 'Library' / 'Application Support' / 'WorkBuddy')
+    else:
+        xdg = os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
+        roots.append(Path(xdg) / 'WorkBuddy')
+
+    for root in roots:
+        db_path = root / 'User' / 'globalStorage' / 'state.vscdb'
+        if db_path.is_file():
+            return db_path
+    return None
+
+
+def _dpapi_decrypt(data: bytes) -> bytes:
+    """Windows DPAPI CryptUnprotectData（对齐 cockpit-tools dpapi_decrypt）"""
+    import ctypes
+
+    class _BLOB(ctypes.Structure):
+        _fields_ = [('cbData', ctypes.c_uint), ('pbData', ctypes.c_void_p)]
+
+    buf = ctypes.create_string_buffer(bytes(data), len(data))
+    src = _BLOB(len(data), ctypes.cast(buf, ctypes.c_void_p))
+    dst = _BLOB()
+    if not ctypes.windll.crypt32.CryptUnprotectData(
+            ctypes.byref(src), None, None, None, None, 0, ctypes.byref(dst)):
+        raise OSError('DPAPI CryptUnprotectData 调用失败')
+    try:
+        return ctypes.string_at(dst.pbData, dst.cbData)
+    finally:
+        if dst.pbData:
+            ctypes.windll.kernel32.LocalFree(ctypes.c_void_p(dst.pbData))
+
+
+def _decrypt_windows_v10(data_root: Path, encrypted: bytes) -> str:
+    """
+    Windows 平台解密：Local State 的 DPAPI 加密密钥 + AES-256-GCM
+    （对齐 cockpit-tools get_windows_encryption_key + decrypt_windows_gcm_v10）
+    """
+    if len(encrypted) < 31 or encrypted[:3] != b'v10':
+        raise ValueError('密文不是 Windows v10 格式')
+
+    local_state_path = data_root / 'Local State'
+    local_state = json.loads(local_state_path.read_text(encoding='utf-8'))
+    encrypted_key = base64.b64decode(local_state['os_crypt']['encrypted_key'])
+    if encrypted_key[:5] != b'DPAPI':
+        raise ValueError('encrypted_key 前缀不是 DPAPI')
+
+    key = _dpapi_decrypt(encrypted_key[5:])
+    cipher = AES.new(key, AES.MODE_GCM, nonce=encrypted[3:15])
+    plain = cipher.decrypt_and_verify(encrypted[15:-16], encrypted[-16:])
+    return plain.decode('utf-8')
+
+
+def _decrypt_macos_v10(data_root: Path, encrypted: bytes) -> str:
+    """
+    macOS 平台解密：Keychain 中的 WorkBuddy Safe Storage 密码 + PBKDF2-SHA1 派生密钥 + AES-128-CBC
+    （对齐 cockpit-tools get_macos_safe_storage_password + pbkdf2_sha1_key + decrypt_cbc_prefixed）
+    """
+    if encrypted[:3] != b'v10':
+        raise ValueError('密文不是 macOS v10 格式')
+
+    candidates = ['WorkBuddy', 'workbuddy', 'WorkBuddy Key', None, 'WorkBuddy Safe Storage']
+    for account in candidates:
+        cmd = ['security', 'find-generic-password', '-w', '-s', 'WorkBuddy Safe Storage']
+        if account:
+            cmd += ['-a', account]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 or not result.stdout.strip():
+            continue
+        password = result.stdout.strip()
+        key = hashlib.pbkdf2_hmac('sha1', password.encode('utf-8'), b'saltysalt', 1003, dklen=16)
+        cipher = AES.new(key, AES.MODE_CBC, iv=b' ' * 16)
+        plain = cipher.decrypt(encrypted[3:])
+        pad_len = plain[-1]
+        if 1 <= pad_len <= 16 and plain[-pad_len:] == bytes([pad_len]) * pad_len:
+            return plain[:-pad_len].decode('utf-8')
+    raise OSError('未能从 Keychain 读取 WorkBuddy Safe Storage 密码')
+
+
+def read_official_client_secret(db_path: Path) -> Optional[str]:
+    """
+    从 state.vscdb 读取并解密 WorkBuddy Secret Storage 值
+    （对齐 cockpit-tools read_secret_storage_value_with_data_root_and_mode + decode_secret_storage_value）
+    """
+    item_key = f'secret://{{"extensionId":"{OFFICIAL_EXTENSION_ID}","key":"{OFFICIAL_SECRET_KEY}"}}'
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute('SELECT value FROM ItemTable WHERE key = ?', (item_key,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        return None
+    raw = row[0]
+
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+
+    # Node Buffer JSON 形态：{"type":"Buffer","data":[...]}，取出密文字节后按平台解密
+    if isinstance(parsed, dict) and isinstance(parsed.get('data'), list):
+        encrypted = bytes(parsed['data'])
+        data_root = db_path.parent.parent.parent
+        if sys.platform == 'win32':
+            return _decrypt_windows_v10(data_root, encrypted)
+        if sys.platform == 'darwin':
+            return _decrypt_macos_v10(data_root, encrypted)
+        raise NotImplementedError(
+            'Linux 平台暂不支持解密官方客户端凭据，请改用 cockpit-tools 或手动导入')
+    if isinstance(parsed, str):
+        return parsed
+    return raw
+
+
+def _pick_local_token(value: Any) -> Optional[str]:
+    """宽松提取 access token（对齐 cockpit-tools parse_local_access_token）"""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, list):
+        for item in value:
+            found = _pick_local_token(item)
+            if found:
+                return found
+        return None
+    if isinstance(value, dict):
+        for key in ('token', 'access_token', 'accessToken'):
+            v = value.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        auth = value.get('auth')
+        if isinstance(auth, dict):
+            for key in ('accessToken', 'access_token'):
+                v = auth.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+        for key in ('session', 'data'):
+            found = _pick_local_token(value.get(key))
+            if found:
+                return found
+    return None
+
+
+def account_from_official_secret(secret: str) -> Optional[Dict[str, Any]]:
+    """
+    从解密后的 secret 提取账号信息（对齐 cockpit-tools build_local_import_payload）
+
+    兼容 JSON（含 auth/account 对象）与纯 token 字符串两种形态，
+    token 兼容 "uid+token" 拼接格式。
+
+    Returns:
+        Optional[Dict[str, Any]]: convert_account 兼容的原始账号结构，解析失败返回 None
+    """
+    try:
+        parsed: Any = json.loads(secret)
+        if not isinstance(parsed, dict):
+            parsed = None
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+
+    raw_token = _pick_local_token(parsed) if parsed else None
+    if not raw_token:
+        raw_token = secret.strip() or None
+    if not raw_token:
+        return None
+
+    # 拆分 "uid+token" 拼接格式（对齐 extract_local_workbuddy_token_parts）
+    uid_from_token: Optional[str] = None
+    if '+' in raw_token:
+        prefix, _, suffix = raw_token.partition('+')
+        suffix = suffix.strip()
+        if not suffix:
+            return None
+        uid_from_token = prefix.strip() or None
+        raw_token = suffix
+
+    root = parsed or {}
+    account = root.get('account') if isinstance(root.get('account'), dict) else {}
+    auth = root.get('auth') if isinstance(root.get('auth'), dict) else {}
+
+    def pick(obj: Dict[str, Any], *keys: str) -> Optional[str]:
+        for key in keys:
+            v = obj.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return None
+
+    uid = pick(root, 'uid') or pick(account, 'uid', 'id') or uid_from_token
+    nickname = pick(root, 'nickname', 'name') or pick(account, 'nickname', 'label')
+    email = (pick(root, 'email') or pick(account, 'email') or pick(auth, 'email')
+             or nickname or uid or 'unknown')
+    enterprise_id = (pick(root, 'enterpriseId', 'enterprise_id')
+                     or pick(account, 'enterpriseId', 'enterprise_id'))
+    refresh_token = (pick(root, 'refreshToken', 'refresh_token')
+                     or pick(auth, 'refreshToken', 'refresh_token'))
+    domain = pick(root, 'domain') or pick(auth, 'domain')
+
+    raw: Dict[str, Any] = {
+        'nickname': nickname or email,
+        'email': email,
+        'access_token': raw_token,
+    }
+    if refresh_token:
+        raw['refresh_token'] = refresh_token
+    if uid:
+        raw['uid'] = uid
+    if enterprise_id:
+        raw['enterprise_id'] = enterprise_id
+    if domain:
+        raw['domain'] = domain
+    return raw
+
+
+def load_accounts_from_official_client(quiet: bool = False) -> List[Dict[str, Any]]:
+    """
+    从官方 WorkBuddy 客户端读取当前登录账号
+    （对齐 cockpit-tools import_payload_from_local，单账号）
+
+    Returns:
+        List[Dict[str, Any]]: 原始账号数据列表，未找到返回空列表
+    """
+    db_path = find_official_client_db()
+    if not db_path:
+        return []
+    try:
+        secret = read_official_client_secret(db_path)
+    except Exception as e:
+        if not quiet:
+            print(f"⚠️  读取官方客户端凭据失败: {e}")
+        return []
+    if not secret:
+        return []
+    account = account_from_official_secret(secret)
+    return [account] if account else []
 
 
 def find_cockpit_data_dirs() -> List[Path]:
@@ -142,6 +407,7 @@ def decrypt_record(enc: Dict[str, Any], key: bytes) -> Optional[Dict[str, Any]]:
         Optional[Dict[str, Any]]: 解密后的明文账号数据，失败返回 None
     """
     if not HAS_CRYPTO:
+        _warn_no_crypto()
         return None
     try:
         nonce = base64.b64decode(enc['nonce'])
@@ -155,7 +421,7 @@ def decrypt_record(enc: Dict[str, Any], key: bytes) -> Optional[Dict[str, Any]]:
         return None
 
 
-def load_accounts_from_dir(directory: Path) -> List[Dict[str, Any]]:
+def load_accounts_from_dir(directory: Path, quiet: bool = False) -> List[Dict[str, Any]]:
     """
     从目录中读取 WorkBuddy 账号详情
 
@@ -164,6 +430,7 @@ def load_accounts_from_dir(directory: Path) -> List[Dict[str, Any]]:
 
     Args:
         directory (Path): 目录路径
+        quiet (bool): True 时不输出警告信息
 
     Returns:
         List[Dict[str, Any]]: 原始账号数据列表
@@ -181,7 +448,8 @@ def load_accounts_from_dir(directory: Path) -> List[Dict[str, Any]]:
         try:
             key = base64.b64decode(key_path.read_text(encoding='utf-8').strip())
         except Exception as e:
-            print(f"⚠️  读取密钥失败: {e}")
+            if not quiet:
+                print(f"⚠️  读取密钥失败: {e}")
 
     accounts: List[Dict[str, Any]] = []
     for json_file in sorted(accounts_dir.glob('*.json')):
@@ -191,11 +459,16 @@ def load_accounts_from_dir(directory: Path) -> List[Dict[str, Any]]:
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError) as e:
-            print(f"⚠️  跳过无法解析的文件 {json_file.name}: {e}")
+            if not quiet:
+                print(f"⚠️  跳过无法解析的文件 {json_file.name}: {e}")
             continue
 
         # 加密格式：含 ciphertext 字段
-        if isinstance(data, dict) and data.get('ciphertext') and key:
+        if isinstance(data, dict) and data.get('ciphertext'):
+            if not key:
+                if not quiet:
+                    print(f"⚠️  跳过加密账号 {json_file.name}: 未找到解密密钥 {KEY_FILE_NAME}")
+                continue
             data = decrypt_record(data, key)
             if not data:
                 continue
@@ -228,10 +501,13 @@ def load_accounts_from_file(file_path: Path) -> List[Dict[str, Any]]:
         if data.get('ciphertext'):
             key_path = find_secure_key(file_path.parent)
             if key_path:
-                key = base64.b64decode(key_path.read_text(encoding='utf-8').strip())
-                dec = decrypt_record(data, key)
-                if dec:
-                    data = dec
+                try:
+                    key = base64.b64decode(key_path.read_text(encoding='utf-8').strip())
+                    dec = decrypt_record(data, key)
+                    if dec:
+                        data = dec
+                except Exception as e:
+                    print(f"⚠️  解密文件 {file_path.name} 失败: {e}")
         if isinstance(data.get('accounts'), list):
             data = data['accounts']
         else:
@@ -337,20 +613,31 @@ def merge_into_config(new_accounts: List[Dict[str, Any]], config_path: Path) -> 
     return {'added': added, 'updated': updated}
 
 
-def collect_accounts() -> List[Dict[str, Any]]:
+def collect_accounts(quiet: bool = False) -> List[Dict[str, Any]]:
     """
-    自动探测 cockpit-tools 数据目录并采集账号（已转换、去重）
+    自动探测本机账号来源并采集账号（已转换、去重）
+
+    来源优先级：官方 WorkBuddy 客户端（当前登录账号）→ cockpit-tools 数据目录（全部账号）
+
+    Args:
+        quiet (bool): True 时不输出来源提示
 
     Returns:
         List[Dict[str, Any]]: 转换后的账号配置列表，无可用来源时返回空列表
     """
-    candidates = find_cockpit_data_dirs()
-    if not candidates:
-        return []
-
+    log = (lambda *a, **k: None) if quiet else print
     raw_accounts: List[Dict[str, Any]] = []
-    for candidate in candidates:
-        raw_accounts.extend(load_accounts_from_dir(candidate))
+
+    official = load_accounts_from_official_client(quiet=quiet)
+    if official:
+        log("📂 来源: 官方 WorkBuddy 客户端 (发现 1 个账号)")
+        raw_accounts.extend(official)
+
+    for candidate in find_cockpit_data_dirs():
+        found = load_accounts_from_dir(candidate, quiet=quiet)
+        if found:
+            log(f"📂 来源: {candidate} (发现 {len(found)} 个账号)")
+            raw_accounts.extend(found)
 
     accounts: List[Dict[str, Any]] = []
     seen = set()
@@ -385,7 +672,7 @@ def sync_accounts(config_path: Optional[Path] = None, quiet: bool = False) -> Op
     """
     log = (lambda *a, **k: None) if quiet else print
     try:
-        accounts = collect_accounts()
+        accounts = collect_accounts(quiet=quiet)
         if not accounts:
             return None
         stats = merge_into_config(accounts, config_path or CONFIG_PATH)
@@ -432,19 +719,7 @@ def main():
                 seen.add(identity)
             accounts.append(converted)
     else:
-        print("🔍 正在自动探测 cockpit-tools 数据目录...")
-        candidates = find_cockpit_data_dirs()
-
-        if not candidates:
-            print("❌ 未找到 cockpit-tools 数据目录")
-            print("   请使用 --path 手动指定账号目录或导出的 JSON 文件，例如：")
-            print("   python import_accounts.py --path \"C:/Users/你的用户名/.antigravity_cockpit\"")
-            sys.exit(1)
-
-        for candidate in candidates:
-            found = load_accounts_from_dir(candidate)
-            if found:
-                print(f"📂 来源: {candidate} (发现 {len(found)} 个账号)")
+        print("🔍 正在自动探测官方 WorkBuddy 客户端与 cockpit-tools 数据目录...")
         accounts = collect_accounts()
 
     if not accounts:

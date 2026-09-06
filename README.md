@@ -57,10 +57,10 @@ WPS 脚本目前包含两个活动页面：
 WorkBuddy（CodeBuddy）每日签到脚本，接口实现参考 [cockpit-tools](https://github.com/jlcodes99/cockpit-tools) 项目，与官方客户端行为保持一致：
 
 - `script/workbuddy/api.py`：接口封装，签到状态查询（双端点回退）、每日签到、令牌刷新
-- `script/workbuddy/import_accounts.py`：账号导入工具，支持从本机 cockpit-tools 数据目录自动导入（含加密账号自动解密），也支持指定 JSON 文件导入
+- `script/workbuddy/import_accounts.py`：账号导入工具，一键导入官方 WorkBuddy 客户端当前登录账号（自动解密凭据库），也支持从 cockpit-tools 批量导入或指定 JSON 文件导入
 - `script/workbuddy/main.py`：统一入口，多账号签到编排、令牌自动续期与结果推送
 
-支持每日签到、连签奖励、多账号管理、令牌自动续期（access_token 60 天 / refresh_token 90 天，自动轮换续期），安装 cockpit-tools 的用户可在签到前自动同步最新令牌。详见 [script/workbuddy/README.md](script/workbuddy/README.md)。
+支持每日签到、连签奖励、多账号管理、令牌自动续期（access_token 60 天 / refresh_token 90 天，自动轮换续期），签到前自动同步本机官方客户端 / cockpit-tools 的最新令牌。详见 [script/workbuddy/README.md](script/workbuddy/README.md)。
 
 ## 📝 更新日志
 
@@ -68,7 +68,7 @@ WorkBuddy（CodeBuddy）每日签到脚本，接口实现参考 [cockpit-tools](
 - ✨ **新增 WorkBuddy(CodeBuddy) 自动签到模块**:
   - 📅 支持每日自动签到与连签奖励
   - 🔄 支持令牌过期自动刷新并回写配置
-  - 📥 支持从本机 cockpit-tools 一键导入账号（含加密存储自动解密）
+  - 📥 支持从官方 WorkBuddy 客户端一键导入账号（自动解密凭据库），也支持从 cockpit-tools 批量导入
   - ⏱️ 内置启动随机延迟与账号间随机间隔，自动错峰
   - 📊 签到结果通过统一推送模块通知
 
